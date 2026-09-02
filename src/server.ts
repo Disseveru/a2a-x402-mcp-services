@@ -5,8 +5,9 @@
  * is protected by the real HTTP 402 + PAYMENT-SIGNATURE flow.
  * Settlement goes through a facilitator (testnet or mainnet).
  *
- * Bazaar metadata is emitted so the tools become discoverable via
- * /discovery/resources on facilitators that support the Bazaar extension.
+ * Pattern follows the official x402 MCP seller quickstart:
+ *   resourceServer.buildPaymentRequirements(...) +
+ *   createPaymentWrapper(resourceServer, { accepts })
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -34,46 +35,34 @@ export async function createPaidMcpServer() {
   resourceServer.register(config.network, new ExactEvmScheme());
   await resourceServer.initialize();
 
-  // Create the payment wrapper that turns any tool handler into a paid one
-  const paid = createPaymentWrapper({
-    resourceServer,
-    payTo: config.payToEvm,
-    network: config.network,
-    // Bazaar extension so tools appear in discovery/resources
-    extensions: {
-      bazaar: {
-        info: {
-          // The wrapper will fill toolName / inputSchema per registration
-        },
-      },
-    },
-  });
-
-  // Register every paid tool
+  // Register every paid tool with its own payment requirements
   for (const tool of paidTools) {
+    const accepts = await resourceServer.buildPaymentRequirements({
+      scheme: "exact",
+      network: config.network,
+      payTo: config.payToEvm,
+      price: tool.price,
+    });
+
+    const paid = createPaymentWrapper(resourceServer, {
+      accepts,
+    });
+
     mcpServer.tool(
       tool.name,
       tool.description,
       tool.inputSchema.shape,
-      paid(
-        {
-          price: tool.price,
-          description: tool.description,
-          // Explicit x402 v2 marker for any downstream inspection
-          x402Version: 2,
-        },
-        async (args) => {
-          const result = await tool.execute(args);
-          return {
-            content: [
-              {
-                type: "text" as const,
-                text: JSON.stringify(result, null, 2),
-              },
-            ],
-          };
-        },
-      ),
+      paid(async (args: Record<string, unknown>) => {
+        const result = await tool.execute(args);
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: JSON.stringify(result, null, 2),
+            },
+          ],
+        };
+      }),
     );
   }
 
